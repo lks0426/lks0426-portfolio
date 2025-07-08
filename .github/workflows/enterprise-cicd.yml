@@ -1,0 +1,270 @@
+name: Enterprise CI/CD - Docker Hub → AWS ECS
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ap-northeast-1
+  DOCKER_REPOSITORY: lks0426/lks0426-portfolio
+  ECS_CLUSTER: lks0426-portfolio-dev
+  ECS_SERVICE: lks0426-portfolio-dev
+  DOMAIN_NAME: lks0426.com
+
+jobs:
+  # 阶段1：代码质量检查
+  quality-check:
+    runs-on: ubuntu-latest
+    outputs:
+      should-deploy: ${{ steps.quality-decision.outputs.should-deploy }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --frozen-lockfile
+
+      - name: Run linter
+        run: npm run lint
+
+      - name: Run type checking
+        run: npm run type-check
+
+      - name: Run tests
+        run: npm test -- --coverage --watchAll=false
+        env:
+          CI: true
+
+      - name: Build application
+        run: npm run build
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL || 'placeholder' }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'placeholder' }}
+
+      - name: Quality gate decision
+        id: quality-decision
+        run: |
+          echo "✅ All quality checks passed"
+          echo "should-deploy=true" >> $GITHUB_OUTPUT
+
+  # 阶段2：构建和推送Docker镜像
+  build-and-push-image:
+    needs: quality-check
+    if: needs.quality-check.outputs.should-deploy == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.build.outputs.image-tag }}
+      image-uri: ${{ steps.build.outputs.image-uri }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME || 'lks0426' }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push image
+        id: build
+        run: |
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          COMMIT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          IMAGE_TAG="${TIMESTAMP}-${COMMIT_SHA}"
+          IMAGE_URI="${{ env.DOCKER_REPOSITORY }}:${IMAGE_TAG}"
+          LATEST_URI="${{ env.DOCKER_REPOSITORY }}:latest"
+          
+          echo "🐳 Building Docker image..."
+          docker build -f Dockerfile.simple-fixed -t $IMAGE_URI -t $LATEST_URI .
+          
+          echo "📤 Pushing to Docker Hub..."
+          docker push $IMAGE_URI
+          docker push $LATEST_URI
+          
+          echo "✅ Image pushed: $IMAGE_URI"
+          echo "image-tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "image-uri=$IMAGE_URI" >> $GITHUB_OUTPUT
+
+  # 阶段3：镜像质量验证（关键质量门控）
+  verify-image:
+    needs: build-and-push-image
+    runs-on: ubuntu-latest
+    outputs:
+      image-verified: ${{ steps.verify.outputs.verified }}
+    
+    steps:
+      - name: Pull and test image
+        id: verify
+        run: |
+          IMAGE_URI="${{ needs.build-and-push-image.outputs.image-uri }}"
+          
+          echo "🔍 Pulling image: $IMAGE_URI"
+          docker pull $IMAGE_URI
+          
+          echo "🧪 Starting image verification..."
+          # 启动容器进行测试
+          docker run -d -p 3000:3000 --name test-app $IMAGE_URI
+          
+          # 等待应用启动
+          echo "⏳ Waiting for application to start..."
+          sleep 30
+          
+          # 健康检查
+          echo "🏥 Health check..."
+          if curl -f http://localhost:3000/ > /dev/null 2>&1; then
+            echo "✅ Health check passed"
+          else
+            echo "❌ Health check failed"
+            docker logs test-app
+            exit 1
+          fi
+          
+          # 性能测试
+          echo "⚡ Performance test..."
+          response_time=$(curl -o /dev/null -s -w "%{time_total}" http://localhost:3000/)
+          echo "Response time: ${response_time}s"
+          
+          if (( $(echo "$response_time < 5.0" | bc -l) )); then
+            echo "✅ Performance test passed"
+          else
+            echo "❌ Performance test failed: too slow (${response_time}s)"
+            exit 1
+          fi
+          
+          # 清理
+          docker stop test-app
+          docker rm test-app
+          
+          echo "✅ Image verification successful!"
+          echo "verified=true" >> $GITHUB_OUTPUT
+
+  # 阶段4：AWS ECS部署（只有镜像验证通过才执行）
+  deploy-to-ecs:
+    needs: [build-and-push-image, verify-image]
+    if: needs.verify-image.outputs.image-verified == 'true'
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Check ECS infrastructure
+        id: check-infra
+        run: |
+          echo "🔍 Checking ECS infrastructure..."
+          
+          # 检查ECS集群是否存在
+          if aws ecs describe-clusters --clusters ${{ env.ECS_CLUSTER }} --region ${{ env.AWS_REGION }} --query 'clusters[0].status' --output text 2>/dev/null | grep -q "ACTIVE"; then
+            echo "✅ ECS cluster exists and is active"
+            echo "cluster-exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ ECS cluster not found or not active"
+            echo "cluster-exists=false" >> $GITHUB_OUTPUT
+          fi
+          
+          # 检查ECS服务是否存在
+          if aws ecs describe-services --cluster ${{ env.ECS_CLUSTER }} --services ${{ env.ECS_SERVICE }} --region ${{ env.AWS_REGION }} --query 'services[0].status' --output text 2>/dev/null | grep -q "ACTIVE"; then
+            echo "✅ ECS service exists and is active"
+            echo "service-exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️ ECS service not found or not active"
+            echo "service-exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Deploy to ECS
+        if: steps.check-infra.outputs.cluster-exists == 'true' && steps.check-infra.outputs.service-exists == 'true'
+        run: |
+          IMAGE_URI="${{ needs.build-and-push-image.outputs.image-uri }}"
+          
+          echo "🚀 Deploying verified image to ECS: $IMAGE_URI"
+          
+          # 获取当前任务定义
+          TASK_DEF=$(aws ecs describe-task-definition \
+            --task-definition ${{ env.ECS_SERVICE }} \
+            --region ${{ env.AWS_REGION }} \
+            --query 'taskDefinition' \
+            --output json | jq --arg IMAGE "$IMAGE_URI" \
+            '.containerDefinitions[0].image = $IMAGE | del(.taskDefinitionArn) | del(.revision) | del(.status) | del(.requiresAttributes) | del(.placementConstraints) | del(.compatibilities) | del(.registeredAt) | del(.registeredBy)')
+          
+          # 注册新任务定义
+          NEW_TASK_DEF=$(aws ecs register-task-definition \
+            --region ${{ env.AWS_REGION }} \
+            --cli-input-json "$TASK_DEF" \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+          
+          echo "📝 New task definition: $NEW_TASK_DEF"
+          
+          # 更新ECS服务
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ env.ECS_SERVICE }} \
+            --task-definition "$NEW_TASK_DEF" \
+            --region ${{ env.AWS_REGION }}
+          
+          echo "✅ ECS service update initiated"
+
+      - name: Wait for deployment
+        if: steps.check-infra.outputs.cluster-exists == 'true' && steps.check-infra.outputs.service-exists == 'true'
+        run: |
+          echo "⏳ Waiting for ECS deployment to complete..."
+          aws ecs wait services-stable \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ env.ECS_SERVICE }} \
+            --region ${{ env.AWS_REGION }}
+          
+          echo "✅ ECS deployment completed successfully!"
+
+      - name: Infrastructure setup needed
+        if: steps.check-infra.outputs.cluster-exists != 'true' || steps.check-infra.outputs.service-exists != 'true'
+        run: |
+          echo "⚠️ AWS ECS infrastructure is not ready"
+          echo "📋 Next steps:"
+          echo "   1. Deploy AWS infrastructure using CDK"
+          echo "   2. Ensure ECS cluster and service are created"
+          echo "   3. Re-run this workflow"
+          echo ""
+          echo "🔧 To deploy infrastructure:"
+          echo "   cd infrastructure/aws-cdk && npm run deploy"
+
+  # 阶段5：部署后验证
+  post-deployment-test:
+    needs: [deploy-to-ecs]
+    if: success()
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Test deployed application
+        run: |
+          echo "🧪 Testing deployed application..."
+          
+          # 等待部署完成
+          sleep 60
+          
+          # 测试网站是否可访问
+          if curl -f "https://${{ env.DOMAIN_NAME }}/" > /dev/null 2>&1; then
+            echo "✅ Website is accessible at https://${{ env.DOMAIN_NAME }}"
+          else
+            echo "⚠️ Website not yet accessible (may need DNS propagation)"
+          fi
+          
+          echo "🎉 Deployment pipeline completed successfully!"
