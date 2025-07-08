@@ -201,12 +201,9 @@ export class PortfolioInfrastructureStack extends cdk.Stack {
       desiredCount: environment === 'prod' ? 2 : 1,
       assignPublicIp: false,
       securityGroups: [ecsSecurityGroup],
-      enableLogging: true,
       enableExecuteCommand: true,
-      deploymentConfiguration: {
-        maximumPercent: 200,
-        minimumHealthyPercent: 50,
-      },
+      maxHealthyPercent: 200,
+      minHealthyPercent: 50,
       platformVersion: ecs.FargatePlatformVersion.LATEST,
     });
 
@@ -218,18 +215,26 @@ export class PortfolioInfrastructureStack extends cdk.Stack {
       domainName: domainName,
     });
 
-    // SSL Certificate
-    const certificate = new acm.Certificate(this, 'PortfolioCertificate', {
+    // SSL Certificate for ALB (regional)
+    const albCertificate = new acm.Certificate(this, 'ALBCertificate', {
       domainName: domainName,
       subjectAlternativeNames: [`www.${domainName}`],
       validation: acm.CertificateValidation.fromDns(hostedZone),
+    });
+
+    // SSL Certificate for CloudFront (must be in us-east-1)
+    const cloudfrontCertificate = new acm.DnsValidatedCertificate(this, 'CloudFrontCertificate', {
+      domainName: domainName,
+      subjectAlternativeNames: [`www.${domainName}`],
+      hostedZone: hostedZone,
+      region: 'us-east-1', // CloudFront requires certs in us-east-1
     });
 
     // HTTPS Listener
     const httpsListener = this.loadBalancer.addListener('HTTPSListener', {
       port: 443,
       protocol: elbv2.ApplicationProtocol.HTTPS,
-      certificates: [certificate],
+      certificates: [albCertificate],
       defaultTargetGroups: [targetGroup],
     });
 
@@ -256,7 +261,7 @@ export class PortfolioInfrastructureStack extends cdk.Stack {
         compress: true,
       },
       domainNames: [domainName, `www.${domainName}`],
-      certificate: certificate,
+      certificate: cloudfrontCertificate,
       minimumProtocolVersion: cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
       enableIpv6: true,
       priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
@@ -300,6 +305,7 @@ export class PortfolioInfrastructureStack extends cdk.Stack {
       value: this.loadBalancer.loadBalancerDnsName,
       description: 'Application Load Balancer DNS Name',
     });
+
 
     new cdk.CfnOutput(this, 'CloudFrontDistributionDomain', {
       value: this.distribution.distributionDomainName,

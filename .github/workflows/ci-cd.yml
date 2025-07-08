@@ -8,10 +8,10 @@ on:
     branches: [main, develop]
 
 env:
-  AWS_REGION: us-east-1
-  ECR_REPOSITORY: lks0426-portfolio
-  ECS_CLUSTER: lks0426-portfolio-cluster
-  ECS_SERVICE: lks0426-portfolio-service
+  AWS_REGION: ap-northeast-1
+  DOCKER_REPOSITORY: lks0426/lks0426-portfolio
+  ECS_CLUSTER: lks0426-portfolio-dev
+  ECS_SERVICE: lks0426-portfolio-dev  
   DOMAIN_NAME: lks0426.com
 
 jobs:
@@ -104,31 +104,29 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push Docker image
         id: build-and-push
         run: |
           TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-          ECR_URI=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}
+          DOCKER_IMAGE=${{ env.DOCKER_REPOSITORY }}:$TIMESTAMP
+          DOCKER_LATEST=${{ env.DOCKER_REPOSITORY }}:latest
           
-          # Build image
-          docker build -f Dockerfile.simple-fixed -t $ECR_URI:$TIMESTAMP .
+          # Build image with multi-tags
+          docker build -f Dockerfile.simple-fixed -t $DOCKER_IMAGE -t $DOCKER_LATEST .
           
-          # Push image
-          docker push $ECR_URI:$TIMESTAMP
+          # Push both timestamp and latest tags
+          docker push $DOCKER_IMAGE
+          docker push $DOCKER_LATEST
           
           # Save image URI for other jobs
-          echo "image-uri=$ECR_URI:$TIMESTAMP" >> $GITHUB_OUTPUT
+          echo "image-uri=$DOCKER_IMAGE" >> $GITHUB_OUTPUT
+          echo "image-latest=$DOCKER_LATEST" >> $GITHUB_OUTPUT
 
       - name: Docker Scout security scan
         uses: docker/scout-action@v1
@@ -159,25 +157,27 @@ jobs:
 
       - name: Update ECS service
         run: |
-          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-          ECR_URI=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:$TIMESTAMP
+          # Use the latest image from Docker Hub
+          DOCKER_IMAGE=${{ env.DOCKER_REPOSITORY }}:latest
           
           # Create new task definition revision
           TASK_DEFINITION=$(aws ecs describe-task-definition \
-            --task-definition lks0426-portfolio \
+            --task-definition lks0426-portfolio-dev \
             --query 'taskDefinition' \
-            --output json | jq --arg IMAGE "$ECR_URI" '.containerDefinitions[0].image = $IMAGE | del(.taskDefinitionArn) | del(.revision) | del(.status) | del(.requiresAttributes) | del(.placementConstraints) | del(.compatibilities) | del(.registeredAt) | del(.registeredBy)')
+            --output json | jq --arg IMAGE "$DOCKER_IMAGE" '.containerDefinitions[0].image = $IMAGE | del(.taskDefinitionArn) | del(.revision) | del(.status) | del(.requiresAttributes) | del(.placementConstraints) | del(.compatibilities) | del(.registeredAt) | del(.registeredBy)')
           
           # Register new task definition
-          aws ecs register-task-definition \
+          NEW_TASK_DEF=$(aws ecs register-task-definition \
             --region ${{ env.AWS_REGION }} \
-            --cli-input-json "$TASK_DEFINITION"
+            --cli-input-json "$TASK_DEFINITION" \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
           
-          # Update ECS service
+          # Update ECS service with new task definition
           aws ecs update-service \
             --cluster ${{ env.ECS_CLUSTER }} \
             --service ${{ env.ECS_SERVICE }} \
-            --task-definition lks0426-portfolio \
+            --task-definition "$NEW_TASK_DEF" \
             --region ${{ env.AWS_REGION }}
 
       - name: Wait for deployment
