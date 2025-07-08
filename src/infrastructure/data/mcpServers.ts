@@ -1,0 +1,65 @@
+import { MCPServer } from '@/domain/types';
+
+export const mcpServersData: MCPServer[] = [
+  {
+    id: 'context7',
+    name: 'Context7',
+    description: 'Advanced document retrieval and context management for comprehensive technical documentation access.',
+    category: 'documentation',
+    installed: true,
+    configPath: '~/.claude/mcp/context7.json',
+  },
+  {
+    id: 'magic',
+    name: 'Magic MCP',
+    description: 'AI-powered UI component generation with modern design patterns and accessibility standards.',
+    category: 'ui',
+    installed: true,
+    configPath: '~/.claude/mcp/magic.json',
+  },
+  {
+    id: 'puppeteer',
+    name: 'Puppeteer MCP',
+    description: 'Browser automation and screenshot capture for project showcases and testing workflows.',
+    category: 'automation',
+    installed: true,
+    configPath: '~/.claude/mcp/puppeteer.json',
+  },
+  {
+    id: 'sequential-thinking',
+    name: 'Sequential Thinking',
+    description: 'Structured reasoning and problem-solving with step-by-step thought processes.',
+    category: 'reasoning',
+    installed: true,
+    configPath: '~/.claude/mcp/sequential.json',
+  },
+  {
+    id: 'filesystem',
+    name: 'File System MCP',
+    description: 'Enhanced file operations with advanced search, filtering, and manipulation capabilities.',
+    category: 'automation',
+    installed: true,
+    configPath: '~/.claude/mcp/filesystem.json',
+  },
+  {
+    id: 'github',
+    name: 'GitHub MCP',
+    description: 'Comprehensive GitHub integration for repository management, issues, and pull requests.',
+    category: 'automation',
+    installed: false,
+  },
+  {
+    id: 'database',
+    name: 'Database MCP',
+    description: 'Multi-database connector supporting PostgreSQL, MongoDB, and Redis operations.',
+    category: 'automation',
+    installed: false,
+  },
+  {
+    id: 'aws',
+    name: 'AWS MCP',
+    description: 'Cloud resource management for EC2, S3, Lambda, and other AWS services.',
+    category: 'automation',
+    installed: false,
+  },
+];

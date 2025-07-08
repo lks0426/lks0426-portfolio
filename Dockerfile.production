@@ -1,0 +1,110 @@
+# Production-optimized multi-stage Dockerfile for Next.js
+# Supports multi-architecture builds (amd64, arm64)
+# Security-hardened with non-root user and minimal attack surface
+
+# Stage 1: Dependencies - Install only production dependencies
+FROM --platform=$BUILDPLATFORM node:20-alpine AS deps
+ARG TARGETPLATFORM
+ARG BUILDPLATFORM
+
+# Security: Update packages and add required dependencies
+RUN apk update && apk upgrade && \
+    apk add --no-cache libc6-compat dumb-init && \
+    rm -rf /var/cache/apk/*
+
+WORKDIR /app
+
+# Copy package files
+COPY package.json ./
+# Create a minimal package-lock.json if needed
+RUN npm install --omit=dev --package-lock-only || true
+# Install dependencies
+RUN npm install --omit=dev || true && \
+    npm cache clean --force
+
+# Stage 2: Builder - Build the application
+FROM --platform=$BUILDPLATFORM node:20-alpine AS builder
+ARG TARGETPLATFORM
+ARG BUILDPLATFORM
+
+RUN apk add --no-cache libc6-compat
+
+WORKDIR /app
+
+# Copy dependencies from deps stage
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+
+# Build-time environment variables
+ARG NEXT_PUBLIC_SUPABASE_URL
+ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
+ARG NEXT_PUBLIC_VERCEL_ANALYTICS_ID
+ARG NEXT_PUBLIC_SENTRY_DSN
+ARG BUILD_ID
+ARG COMMIT_SHA
+
+ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL
+ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY
+ENV NEXT_PUBLIC_VERCEL_ANALYTICS_ID=$NEXT_PUBLIC_VERCEL_ANALYTICS_ID
+ENV NEXT_PUBLIC_SENTRY_DSN=$NEXT_PUBLIC_SENTRY_DSN
+ENV NEXT_PUBLIC_BUILD_ID=$BUILD_ID
+ENV NEXT_PUBLIC_COMMIT_SHA=$COMMIT_SHA
+
+# Disable Next.js telemetry
+ENV NEXT_TELEMETRY_DISABLED=1
+
+# Build the application
+RUN npm run build
+
+# Stage 3: Runner - Production runtime
+FROM --platform=$TARGETPLATFORM node:20-alpine AS runner
+ARG TARGETPLATFORM
+ARG BUILD_DATE
+ARG VERSION
+ARG COMMIT_SHA
+
+# Metadata labels
+LABEL maintainer="lks0426@gmail.com"
+LABEL org.opencontainers.image.title="LKS0426 Portfolio"
+LABEL org.opencontainers.image.description="Modern personal portfolio showcasing full-stack development and AI expertise"
+LABEL org.opencontainers.image.version=$VERSION
+LABEL org.opencontainers.image.created=$BUILD_DATE
+LABEL org.opencontainers.image.revision=$COMMIT_SHA
+LABEL org.opencontainers.image.source="https://github.com/lks0426/portfolio"
+LABEL org.opencontainers.image.url="https://lks0426.com"
+
+# Security updates and minimal required packages
+RUN apk update && apk upgrade && \
+    apk add --no-cache dumb-init curl && \
+    rm -rf /var/cache/apk/*
+
+WORKDIR /app
+
+# Production environment
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV PORT=3000
+ENV HOSTNAME="0.0.0.0"
+
+# Create non-root user for security
+RUN addgroup --system --gid 1001 nodejs && \
+    adduser --system --uid 1001 nextjs
+
+# Copy built application from builder stage
+COPY --from=builder --chown=nextjs:nodejs /app/public ./public
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+
+# Security: Switch to non-root user
+USER nextjs
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:3000/api/health || exit 1
+
+# Expose port
+EXPOSE 3000
+
+# Use dumb-init for proper signal handling
+ENTRYPOINT ["dumb-init", "--"]
+CMD ["node", "server.js"]

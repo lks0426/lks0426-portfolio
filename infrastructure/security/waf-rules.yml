@@ -1,0 +1,376 @@
+# AWS WAF v2 Configuration for LKS0426 Portfolio
+# Deploy with: aws cloudformation deploy --template-file waf-rules.yml --stack-name portfolio-waf
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AWS WAF v2 Web ACL for LKS0426 Portfolio Application'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, staging, prod]
+  
+  CloudFrontDistributionArn:
+    Type: String
+    Description: CloudFront Distribution ARN to associate with WAF
+
+Resources:
+  # IP Reputation Rule - Block known malicious IPs
+  IPReputationRuleGroup:
+    Type: AWS::WAFv2::RuleGroup
+    Properties:
+      Name: !Sub '${Environment}-ip-reputation'
+      Scope: CLOUDFRONT
+      Capacity: 50
+      Rules:
+        - Name: AWSManagedRulesAmazonIpReputationList
+          Priority: 1
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesAmazonIpReputationList
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: IPReputationRule
+
+  # Core Rule Set - OWASP Top 10 protection
+  CoreRuleSet:
+    Type: AWS::WAFv2::RuleGroup
+    Properties:
+      Name: !Sub '${Environment}-core-rule-set'
+      Scope: CLOUDFRONT
+      Capacity: 700
+      Rules:
+        - Name: AWSManagedRulesCommonRuleSet
+          Priority: 1
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+              ExcludedRules:
+                - Name: SizeRestrictions_BODY
+                - Name: GenericRFI_BODY
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: CommonRuleSet
+
+  # Known Bad Inputs Rule Set
+  KnownBadInputsRuleSet:
+    Type: AWS::WAFv2::RuleGroup
+    Properties:
+      Name: !Sub '${Environment}-known-bad-inputs'
+      Scope: CLOUDFRONT
+      Capacity: 200
+      Rules:
+        - Name: AWSManagedRulesKnownBadInputsRuleSet
+          Priority: 1
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesKnownBadInputsRuleSet
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: KnownBadInputs
+
+  # Rate Limiting Rule Group
+  RateLimitingRuleGroup:
+    Type: AWS::WAFv2::RuleGroup
+    Properties:
+      Name: !Sub '${Environment}-rate-limiting'
+      Scope: CLOUDFRONT
+      Capacity: 100
+      Rules:
+        - Name: GeneralRateLimiting
+          Priority: 1
+          Statement:
+            RateBasedStatement:
+              Limit: 2000
+              AggregateKeyType: IP
+          Action:
+            Block: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: GeneralRateLimit
+        
+        - Name: APIRateLimiting
+          Priority: 2
+          Statement:
+            RateBasedStatement:
+              Limit: 500
+              AggregateKeyType: IP
+              ScopeDownStatement:
+                ByteMatchStatement:
+                  SearchString: /api/
+                  FieldToMatch:
+                    UriPath: {}
+                  TextTransformations:
+                    - Priority: 0
+                      Type: LOWERCASE
+                  PositionalConstraint: STARTS_WITH
+          Action:
+            Block: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: APIRateLimit
+
+  # Geographic Restriction (if needed)
+  GeoRestrictionRuleGroup:
+    Type: AWS::WAFv2::RuleGroup
+    Properties:
+      Name: !Sub '${Environment}-geo-restriction'
+      Scope: CLOUDFRONT
+      Capacity: 50
+      Rules:
+        - Name: AllowedCountries
+          Priority: 1
+          Statement:
+            GeoMatchStatement:
+              CountryCodes:
+                - US  # United States
+                - CA  # Canada
+                - GB  # United Kingdom
+                - DE  # Germany
+                - FR  # France
+                - JP  # Japan
+                - AU  # Australia
+                - SG  # Singapore
+          Action:
+            Allow: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: AllowedCountries
+
+  # Custom Security Rules
+  CustomSecurityRules:
+    Type: AWS::WAFv2::RuleGroup
+    Properties:
+      Name: !Sub '${Environment}-custom-security'
+      Scope: CLOUDFRONT
+      Capacity: 100
+      Rules:
+        - Name: BlockSQLInjection
+          Priority: 1
+          Statement:
+            SqliMatchStatement:
+              FieldToMatch:
+                AllQueryArguments: {}
+              TextTransformations:
+                - Priority: 0
+                  Type: URL_DECODE
+                - Priority: 1
+                  Type: HTML_ENTITY_DECODE
+          Action:
+            Block: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: SQLInjectionBlock
+        
+        - Name: BlockXSS
+          Priority: 2
+          Statement:
+            XssMatchStatement:
+              FieldToMatch:
+                AllQueryArguments: {}
+              TextTransformations:
+                - Priority: 0
+                  Type: URL_DECODE
+                - Priority: 1
+                  Type: HTML_ENTITY_DECODE
+          Action:
+            Block: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: XSSBlock
+
+  # Main Web ACL
+  WebACL:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Sub '${Environment}-portfolio-web-acl'
+      Scope: CLOUDFRONT
+      DefaultAction:
+        Allow: {}
+      Rules:
+        # IP Reputation (Priority 100)
+        - Name: IPReputationRule
+          Priority: 100
+          Statement:
+            RuleGroupReferenceStatement:
+              Arn: !GetAtt IPReputationRuleGroup.Arn
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: IPReputationRuleGroup
+
+        # Rate Limiting (Priority 200)
+        - Name: RateLimitingRule
+          Priority: 200
+          Statement:
+            RuleGroupReferenceStatement:
+              Arn: !GetAtt RateLimitingRuleGroup.Arn
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: RateLimitingRuleGroup
+
+        # Geographic Restrictions (Priority 300)
+        - Name: GeoRestrictionRule
+          Priority: 300
+          Statement:
+            RuleGroupReferenceStatement:
+              Arn: !GetAtt GeoRestrictionRuleGroup.Arn
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: GeoRestrictionRuleGroup
+
+        # Core Rule Set (Priority 400)
+        - Name: CoreRuleSetRule
+          Priority: 400
+          Statement:
+            RuleGroupReferenceStatement:
+              Arn: !GetAtt CoreRuleSet.Arn
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: CoreRuleSet
+
+        # Known Bad Inputs (Priority 500)
+        - Name: KnownBadInputsRule
+          Priority: 500
+          Statement:
+            RuleGroupReferenceStatement:
+              Arn: !GetAtt KnownBadInputsRuleSet.Arn
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: KnownBadInputsRuleSet
+
+        # Custom Security Rules (Priority 600)
+        - Name: CustomSecurityRule
+          Priority: 600
+          Statement:
+            RuleGroupReferenceStatement:
+              Arn: !GetAtt CustomSecurityRules.Arn
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: CustomSecurityRules
+
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: !Sub '${Environment}PortfolioWebACL'
+      
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: lks0426-portfolio
+
+  # CloudWatch Log Group for WAF logs
+  WAFLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/wafv2/${Environment}-portfolio'
+      RetentionInDays: 30
+
+  # WAF Logging Configuration
+  WAFLoggingConfig:
+    Type: AWS::WAFv2::LoggingConfiguration
+    Properties:
+      ResourceArn: !GetAtt WebACL.Arn
+      LogDestinationConfigs:
+        - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/wafv2/${Environment}-portfolio'
+      RedactedFields:
+        - SingleHeader:
+            Name: authorization
+        - SingleHeader:
+            Name: cookie
+
+  # CloudWatch Alarms for WAF
+  WAFBlockedRequestsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-WAF-HighBlockedRequests'
+      AlarmDescription: 'High number of blocked requests by WAF'
+      MetricName: BlockedRequests
+      Namespace: AWS/WAFV2
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 100
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: WebACL
+          Value: !Sub '${Environment}-portfolio-web-acl'
+        - Name: Region
+          Value: CloudFront
+        - Name: Rule
+          Value: ALL
+
+  WAFAllowedRequestsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-WAF-LowAllowedRequests'
+      AlarmDescription: 'Unusually low number of allowed requests'
+      MetricName: AllowedRequests
+      Namespace: AWS/WAFV2
+      Statistic: Sum
+      Period: 900
+      EvaluationPeriods: 2
+      Threshold: 10
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: WebACL
+          Value: !Sub '${Environment}-portfolio-web-acl'
+        - Name: Region
+          Value: CloudFront
+        - Name: Rule
+          Value: ALL
+      TreatMissingData: breaching
+
+Outputs:
+  WebACLArn:
+    Description: 'WAF Web ACL ARN'
+    Value: !GetAtt WebACL.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-WebACLArn'
+  
+  WebACLId:
+    Description: 'WAF Web ACL ID'
+    Value: !Ref WebACL
+    Export:
+      Name: !Sub '${AWS::StackName}-WebACLId'
+  
+  LogGroupName:
+    Description: 'WAF Log Group Name'
+    Value: !Ref WAFLogGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-LogGroup'

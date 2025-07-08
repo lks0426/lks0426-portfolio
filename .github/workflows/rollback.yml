@@ -1,0 +1,183 @@
+name: Emergency Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to rollback'
+        required: true
+        default: 'prod'
+        type: choice
+        options:
+          - prod
+          - staging
+          - dev
+      rollback_to_version:
+        description: 'Docker image tag to rollback to'
+        required: true
+        type: string
+      reason:
+        description: 'Reason for rollback'
+        required: true
+        type: string
+
+env:
+  AWS_REGION: us-east-1
+  DOCKER_REGISTRY: docker.io
+  DOCKER_USERNAME: lks0426
+  DOCKER_REPOSITORY: lks0426-portfolio
+
+jobs:
+  emergency-rollback:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify rollback image exists
+        run: |
+          echo "Verifying image exists: ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_USERNAME }}/${{ env.DOCKER_REPOSITORY }}:${{ github.event.inputs.rollback_to_version }}"
+          
+          # Check if image exists on Docker Hub
+          docker manifest inspect ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_USERNAME }}/${{ env.DOCKER_REPOSITORY }}:${{ github.event.inputs.rollback_to_version }}
+
+      - name: Get current deployment info
+        id: current-deployment
+        run: |
+          CLUSTER_NAME="lks0426-portfolio-${{ github.event.inputs.environment }}"
+          SERVICE_NAME="lks0426-portfolio-${{ github.event.inputs.environment }}"
+          
+          # Get current task definition
+          CURRENT_TASK_DEF=$(aws ecs describe-services \
+            --cluster $CLUSTER_NAME \
+            --services $SERVICE_NAME \
+            --query 'services[0].taskDefinition' \
+            --output text)
+          
+          echo "current-task-def=$CURRENT_TASK_DEF" >> $GITHUB_OUTPUT
+          echo "cluster-name=$CLUSTER_NAME" >> $GITHUB_OUTPUT
+          echo "service-name=$SERVICE_NAME" >> $GITHUB_OUTPUT
+
+      - name: Create new task definition with rollback image
+        id: rollback-task-def
+        run: |
+          CURRENT_TASK_DEF="${{ steps.current-deployment.outputs.current-task-def }}"
+          ROLLBACK_IMAGE="${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_USERNAME }}/${{ env.DOCKER_REPOSITORY }}:${{ github.event.inputs.rollback_to_version }}"
+          
+          # Download current task definition
+          aws ecs describe-task-definition \
+            --task-definition $CURRENT_TASK_DEF \
+            --query 'taskDefinition' > current-task-def.json
+          
+          # Remove fields that can't be included in registration
+          jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .placementConstraints, .compatibilities, .registeredAt, .registeredBy)' \
+            current-task-def.json > clean-task-def.json
+          
+          # Update the image
+          jq --arg image "$ROLLBACK_IMAGE" \
+            '.containerDefinitions[0].image = $image' \
+            clean-task-def.json > rollback-task-def.json
+          
+          # Register new task definition
+          NEW_TASK_DEF=$(aws ecs register-task-definition \
+            --cli-input-json file://rollback-task-def.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+          
+          echo "new-task-def=$NEW_TASK_DEF" >> $GITHUB_OUTPUT
+
+      - name: Update ECS service with rollback image
+        run: |
+          aws ecs update-service \
+            --cluster ${{ steps.current-deployment.outputs.cluster-name }} \
+            --service ${{ steps.current-deployment.outputs.service-name }} \
+            --task-definition ${{ steps.rollback-task-def.outputs.new-task-def }}
+
+      - name: Wait for rollback to complete
+        run: |
+          echo "Waiting for service to stabilize with rollback image..."
+          aws ecs wait services-stable \
+            --cluster ${{ steps.current-deployment.outputs.cluster-name }} \
+            --services ${{ steps.current-deployment.outputs.service-name }}
+
+      - name: Verify rollback health
+        run: |
+          # Get the website URL from CDK outputs or construct it
+          WEBSITE_URL="https://lks0426.com"
+          if [ "${{ github.event.inputs.environment }}" != "prod" ]; then
+            WEBSITE_URL="https://${{ github.event.inputs.environment }}.lks0426.com"
+          fi
+          
+          echo "Testing rollback at: $WEBSITE_URL"
+          
+          # Health check with retries
+          for i in {1..10}; do
+            if curl -f "$WEBSITE_URL/api/health"; then
+              echo "✅ Rollback health check passed!"
+              break
+            fi
+            echo "Attempt $i failed, retrying in 30 seconds..."
+            sleep 30
+            if [ $i -eq 10 ]; then
+              echo "❌ Rollback health check failed!"
+              exit 1
+            fi
+          done
+
+      - name: Create rollback issue
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const issue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `🚨 Emergency Rollback - ${{ github.event.inputs.environment }}`,
+              body: `
+              ## Emergency Rollback Executed
+              
+              **Environment:** ${{ github.event.inputs.environment }}
+              **Rolled back to:** ${{ github.event.inputs.rollback_to_version }}
+              **Reason:** ${{ github.event.inputs.reason }}
+              **Executed by:** @${{ github.actor }}
+              **Timestamp:** ${new Date().toISOString()}
+              
+              **Previous Task Definition:** ${{ steps.current-deployment.outputs.current-task-def }}
+              **New Task Definition:** ${{ steps.rollback-task-def.outputs.new-task-def }}
+              
+              ## Next Steps
+              - [ ] Investigate root cause
+              - [ ] Fix the issue
+              - [ ] Test the fix
+              - [ ] Deploy the fix
+              - [ ] Close this issue
+              `,
+              labels: ['rollback', 'critical', 'ops']
+            });
+
+      - name: Notify team
+        uses: 8398a7/action-slack@v3
+        with:
+          status: custom
+          custom_payload: |
+            {
+              text: "🚨 Emergency Rollback Executed",
+              attachments: [{
+                color: "warning",
+                fields: [
+                  { title: "Environment", value: "${{ github.event.inputs.environment }}", short: true },
+                  { title: "Rolled back to", value: "${{ github.event.inputs.rollback_to_version }}", short: true },
+                  { title: "Reason", value: "${{ github.event.inputs.reason }}", short: false },
+                  { title: "Executed by", value: "${{ github.actor }}", short: true }
+                ]
+              }]
+            }
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}

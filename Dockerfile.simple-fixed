@@ -1,0 +1,35 @@
+# Simple fixed Dockerfile for Next.js standalone
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Copy all files
+COPY . .
+
+# Install dependencies
+RUN npm install --legacy-peer-deps
+
+# Build the application (this creates .next/standalone)
+RUN npm run build
+
+# Verify standalone was created
+RUN ls -la .next/standalone/
+
+# Create non-root user
+RUN addgroup --system --gid 1001 nodejs && \
+    adduser --system --uid 1001 nextjs
+
+# Set environment variables
+ENV NODE_ENV=production
+ENV PORT=3000
+ENV HOSTNAME="0.0.0.0"
+
+# Change ownership
+RUN chown -R nextjs:nodejs /app
+
+USER nextjs
+
+EXPOSE 3000
+
+# Use the standalone server.js directly
+CMD ["node", ".next/standalone/server.js"]

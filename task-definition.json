@@ -1,0 +1,29 @@
+{
+  "family": "lks0426-task",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::345289096628:role/ecsTaskExecutionRole",
+  "containerDefinitions": [
+    {
+      "name": "lks0426-container",
+      "image": "345289096628.dkr.ecr.ap-northeast-1.amazonaws.com/lks0426-portfolio:latest",
+      "portMappings": [
+        {
+          "containerPort": 3000,
+          "protocol": "tcp"
+        }
+      ],
+      "essential": true,
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/lks0426-task",
+          "awslogs-region": "ap-northeast-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}

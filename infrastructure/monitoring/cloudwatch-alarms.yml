@@ -1,0 +1,236 @@
+# CloudWatch Alarms Configuration for LKS0426 Portfolio
+# Deploy with: aws cloudformation deploy --template-file cloudwatch-alarms.yml --stack-name portfolio-alarms
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudWatch Alarms for LKS0426 Portfolio Application'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, staging, prod]
+  
+  SNSTopicArn:
+    Type: String
+    Description: SNS Topic ARN for alert notifications
+  
+  ECSClusterName:
+    Type: String
+    Default: lks0426-portfolio-prod
+  
+  ECSServiceName:
+    Type: String
+    Default: lks0426-portfolio-prod
+  
+  LoadBalancerFullName:
+    Type: String
+    Description: Full name of the Application Load Balancer
+  
+  CloudFrontDistributionId:
+    Type: String
+    Description: CloudFront Distribution ID
+
+Resources:
+  # ECS Service CPU Utilization Alarm
+  ECSHighCPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-ECS-HighCPU'
+      AlarmDescription: 'ECS Service CPU utilization is too high'
+      MetricName: CPUUtilization
+      Namespace: AWS/ECS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: ServiceName
+          Value: !Ref ECSServiceName
+        - Name: ClusterName
+          Value: !Ref ECSClusterName
+      AlarmActions:
+        - !Ref SNSTopicArn
+      OKActions:
+        - !Ref SNSTopicArn
+
+  # ECS Service Memory Utilization Alarm
+  ECSHighMemoryAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-ECS-HighMemory'
+      AlarmDescription: 'ECS Service memory utilization is too high'
+      MetricName: MemoryUtilization
+      Namespace: AWS/ECS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 85
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: ServiceName
+          Value: !Ref ECSServiceName
+        - Name: ClusterName
+          Value: !Ref ECSClusterName
+      AlarmActions:
+        - !Ref SNSTopicArn
+
+  # ECS Service Task Count Alarm
+  ECSLowTaskCountAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-ECS-LowTaskCount'
+      AlarmDescription: 'ECS Service has too few running tasks'
+      MetricName: RunningTaskCount
+      Namespace: AWS/ECS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: ServiceName
+          Value: !Ref ECSServiceName
+        - Name: ClusterName
+          Value: !Ref ECSClusterName
+      AlarmActions:
+        - !Ref SNSTopicArn
+
+  # ALB Response Time Alarm
+  ALBHighResponseTimeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-ALB-HighResponseTime'
+      AlarmDescription: 'Application Load Balancer response time is too high'
+      MetricName: TargetResponseTime
+      Namespace: AWS/ApplicationELB
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 2.0
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !Ref LoadBalancerFullName
+      AlarmActions:
+        - !Ref SNSTopicArn
+
+  # ALB 5XX Error Rate Alarm
+  ALBHigh5XXErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-ALB-High5XXErrors'
+      AlarmDescription: 'High rate of 5XX errors from ALB'
+      MetricName: HTTPCode_Target_5XX_Count
+      Namespace: AWS/ApplicationELB
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 10
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !Ref LoadBalancerFullName
+      AlarmActions:
+        - !Ref SNSTopicArn
+
+  # ALB 4XX Error Rate Alarm
+  ALBHigh4XXErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-ALB-High4XXErrors'
+      AlarmDescription: 'High rate of 4XX errors from ALB'
+      MetricName: HTTPCode_Target_4XX_Count
+      Namespace: AWS/ApplicationELB
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 50
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !Ref LoadBalancerFullName
+      AlarmActions:
+        - !Ref SNSTopicArn
+
+  # CloudFront Origin Latency Alarm
+  CloudFrontHighLatencyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-CloudFront-HighLatency'
+      AlarmDescription: 'CloudFront origin latency is too high'
+      MetricName: OriginLatency
+      Namespace: AWS/CloudFront
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 3000
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: DistributionId
+          Value: !Ref CloudFrontDistributionId
+      AlarmActions:
+        - !Ref SNSTopicArn
+
+  # CloudFront Low Cache Hit Rate Alarm
+  CloudFrontLowCacheHitRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-CloudFront-LowCacheHitRate'
+      AlarmDescription: 'CloudFront cache hit rate is too low'
+      MetricName: CacheHitRate
+      Namespace: AWS/CloudFront
+      Statistic: Average
+      Period: 900
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: DistributionId
+          Value: !Ref CloudFrontDistributionId
+      AlarmActions:
+        - !Ref SNSTopicArn
+
+  # Custom Application Health Check Alarm
+  ApplicationHealthCheckAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Environment}-Application-HealthCheck'
+      AlarmDescription: 'Application health check is failing'
+      MetricName: HealthCheck
+      Namespace: LKS0426/Portfolio
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      AlarmActions:
+        - !Ref SNSTopicArn
+      TreatMissingData: breaching
+
+  # Composite Alarm for Critical System Health
+  SystemHealthCompositeAlarm:
+    Type: AWS::CloudWatch::CompositeAlarm
+    Properties:
+      AlarmName: !Sub '${Environment}-System-CriticalHealth'
+      AlarmDescription: 'Critical system health issues detected'
+      AlarmRule: !Sub |
+        ALARM(${ECSLowTaskCountAlarm}) OR 
+        ALARM(${ALBHigh5XXErrorAlarm}) OR 
+        ALARM(${ApplicationHealthCheckAlarm})
+      ActionsEnabled: true
+      AlarmActions:
+        - !Ref SNSTopicArn
+
+Outputs:
+  ECSHighCPUAlarmName:
+    Description: 'ECS High CPU Alarm Name'
+    Value: !Ref ECSHighCPUAlarm
+    Export:
+      Name: !Sub '${AWS::StackName}-ECSHighCPUAlarm'
+  
+  SystemHealthCompositeAlarmName:
+    Description: 'System Health Composite Alarm Name'
+    Value: !Ref SystemHealthCompositeAlarm
+    Export:
+      Name: !Sub '${AWS::StackName}-SystemHealthAlarm'

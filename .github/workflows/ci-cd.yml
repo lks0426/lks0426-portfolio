@@ -1,0 +1,372 @@
+name: CI/CD Pipeline - Docker Hub to AWS ECS
+
+on:
+  push:
+    branches: [main, develop]
+    tags: ['v*']
+  pull_request:
+    branches: [main, develop]
+
+env:
+  DOCKER_REGISTRY: docker.io
+  DOCKER_USERNAME: lks0426
+  DOCKER_REPOSITORY: lks0426-portfolio
+  AWS_REGION: us-east-1
+  DOMAIN_NAME: lks0426.com
+
+jobs:
+  # Quality Gates - Testing and Security
+  quality-gates:
+    runs-on: ubuntu-latest
+    outputs:
+      should-deploy: ${{ steps.deployment-decision.outputs.should-deploy }}
+      environment: ${{ steps.deployment-decision.outputs.environment }}
+      docker-tag: ${{ steps.meta.outputs.tags }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --frozen-lockfile
+
+      - name: Run linter
+        run: npm run lint
+
+      - name: Run type checking
+        run: npm run type-check
+
+      - name: Run unit tests
+        run: npm test -- --coverage --watchAll=false
+        env:
+          CI: true
+
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v3
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+      - name: Build application
+        run: npm run build
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+
+      - name: Security audit
+        run: npm audit --audit-level=moderate
+
+      - name: License check
+        run: npx license-checker --onlyAllow 'MIT;Apache-2.0;BSD-2-Clause;BSD-3-Clause;ISC'
+
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_USERNAME }}/${{ env.DOCKER_REPOSITORY }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Deployment decision
+        id: deployment-decision
+        run: |
+          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "should-deploy=true" >> $GITHUB_OUTPUT
+            echo "environment=prod" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/develop" ]]; then
+            echo "should-deploy=true" >> $GITHUB_OUTPUT
+            echo "environment=staging" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event_name }}" == "push" && "${{ github.ref_type }}" == "tag" ]]; then
+            echo "should-deploy=true" >> $GITHUB_OUTPUT
+            echo "environment=prod" >> $GITHUB_OUTPUT
+          else
+            echo "should-deploy=false" >> $GITHUB_OUTPUT
+            echo "environment=none" >> $GITHUB_OUTPUT
+          fi
+
+  # Docker Build and Push
+  docker-build:
+    needs: quality-gates
+    runs-on: ubuntu-latest
+    if: needs.quality-gates.outputs.should-deploy == 'true'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.DOCKER_REGISTRY }}
+          username: ${{ env.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.production
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ needs.quality-gates.outputs.docker-tag }}
+          build-args: |
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            VERSION=${{ github.ref_name }}
+            COMMIT_SHA=${{ github.sha }}
+            BUILD_ID=${{ github.run_number }}
+            NEXT_PUBLIC_SUPABASE_URL=${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+            NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+            NEXT_PUBLIC_VERCEL_ANALYTICS_ID=${{ secrets.NEXT_PUBLIC_VERCEL_ANALYTICS_ID }}
+            NEXT_PUBLIC_SENTRY_DSN=${{ secrets.NEXT_PUBLIC_SENTRY_DSN }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          sbom: true
+
+      - name: Docker Scout security scan
+        uses: docker/scout-action@v1
+        if: github.event_name == 'pull_request'
+        with:
+          command: cves
+          image: ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_USERNAME }}/${{ env.DOCKER_REPOSITORY }}:latest
+          only-severities: critical,high
+          exit-code: true
+
+  # Integration Tests
+  integration-tests:
+    needs: [quality-gates, docker-build]
+    runs-on: ubuntu-latest
+    if: needs.quality-gates.outputs.should-deploy == 'true'
+    
+    services:
+      portfolio:
+        image: ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_USERNAME }}/${{ env.DOCKER_REPOSITORY }}:latest
+        ports:
+          - 3000:3000
+        options: --health-cmd="curl -f http://localhost:3000/api/health || exit 1" --health-interval=30s --health-timeout=10s --health-retries=5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Wait for service to be ready
+        run: |
+          timeout 300 bash -c 'until curl -f http://localhost:3000/api/health; do sleep 5; done'
+
+      - name: Run integration tests
+        run: |
+          # Health check
+          curl -f http://localhost:3000/api/health
+          
+          # Performance test
+          response_time=$(curl -o /dev/null -s -w "%{time_total}" http://localhost:3000/)
+          echo "Response time: ${response_time}s"
+          
+          # Basic functionality test
+          curl -f http://localhost:3000/ | grep -q "LKS0426"
+
+      - name: Load testing with artillery
+        run: |
+          npm install -g artillery
+          echo 'config:
+            target: "http://localhost:3000"
+            phases:
+              - duration: 60
+                arrivalRate: 10
+          scenarios:
+            - name: "Browse homepage"
+              requests:
+                - get:
+                    url: "/"
+                - get:
+                    url: "/api/health"' > loadtest.yml
+          artillery run loadtest.yml
+
+  # AWS Infrastructure Deployment
+  deploy-infrastructure:
+    needs: [quality-gates, docker-build, integration-tests]
+    runs-on: ubuntu-latest
+    if: needs.quality-gates.outputs.should-deploy == 'true'
+    environment: ${{ needs.quality-gates.outputs.environment }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js for CDK
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: 'infrastructure/aws-cdk/package-lock.json'
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install CDK dependencies
+        working-directory: infrastructure/aws-cdk
+        run: npm ci
+
+      - name: CDK Bootstrap
+        working-directory: infrastructure/aws-cdk
+        run: npx cdk bootstrap
+
+      - name: CDK Deploy
+        working-directory: infrastructure/aws-cdk
+        run: |
+          npx cdk deploy LKS0426-Portfolio-${{ needs.quality-gates.outputs.environment ^}} \
+            --require-approval never \
+            --outputs-file cdk-outputs.json \
+            --context dockerImage=${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_USERNAME }}/${{ env.DOCKER_REPOSITORY }}:${{ github.sha }}
+
+      - name: Upload CDK outputs
+        uses: actions/upload-artifact@v3
+        with:
+          name: cdk-outputs-${{ needs.quality-gates.outputs.environment }}
+          path: infrastructure/aws-cdk/cdk-outputs.json
+
+  # ECS Service Update
+  update-ecs-service:
+    needs: [quality-gates, deploy-infrastructure]
+    runs-on: ubuntu-latest
+    if: needs.quality-gates.outputs.should-deploy == 'true'
+    environment: ${{ needs.quality-gates.outputs.environment }}
+    
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Download CDK outputs
+        uses: actions/download-artifact@v3
+        with:
+          name: cdk-outputs-${{ needs.quality-gates.outputs.environment }}
+
+      - name: Update ECS service
+        run: |
+          CLUSTER_NAME=$(jq -r '.["LKS0426-Portfolio-${{ needs.quality-gates.outputs.environment ^}}"]. ECSClusterName' cdk-outputs.json)
+          SERVICE_NAME=$(jq -r '.["LKS0426-Portfolio-${{ needs.quality-gates.outputs.environment ^}}"].ECSServiceName' cdk-outputs.json)
+          
+          aws ecs update-service \
+            --cluster $CLUSTER_NAME \
+            --service $SERVICE_NAME \
+            --force-new-deployment \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Wait for deployment
+        run: |
+          CLUSTER_NAME=$(jq -r '.["LKS0426-Portfolio-${{ needs.quality-gates.outputs.environment ^}}"].ECSClusterName' cdk-outputs.json)
+          SERVICE_NAME=$(jq -r '.["LKS0426-Portfolio-${{ needs.quality-gates.outputs.environment ^}}"].ECSServiceName' cdk-outputs.json)
+          
+          aws ecs wait services-stable \
+            --cluster $CLUSTER_NAME \
+            --services $SERVICE_NAME \
+            --region ${{ env.AWS_REGION }}
+
+  # Post-deployment validation
+  post-deployment-tests:
+    needs: [quality-gates, update-ecs-service]
+    runs-on: ubuntu-latest
+    if: needs.quality-gates.outputs.should-deploy == 'true'
+    
+    steps:
+      - name: Download CDK outputs
+        uses: actions/download-artifact@v3
+        with:
+          name: cdk-outputs-${{ needs.quality-gates.outputs.environment }}
+
+      - name: Health check on deployed service
+        run: |
+          WEBSITE_URL=$(jq -r '.["LKS0426-Portfolio-${{ needs.quality-gates.outputs.environment ^}}"].WebsiteURL' cdk-outputs.json)
+          
+          # Wait for DNS propagation
+          sleep 60
+          
+          # Health check with retries
+          for i in {1..10}; do
+            if curl -f "$WEBSITE_URL/api/health"; then
+              echo "Health check passed!"
+              break
+            fi
+            echo "Attempt $i failed, retrying in 30 seconds..."
+            sleep 30
+          done
+
+      - name: Performance validation
+        run: |
+          WEBSITE_URL=$(jq -r '.["LKS0426-Portfolio-${{ needs.quality-gates.outputs.environment ^}}"].WebsiteURL' cdk-outputs.json)
+          
+          response_time=$(curl -o /dev/null -s -w "%{time_total}" "$WEBSITE_URL/")
+          echo "Response time: ${response_time}s"
+          
+          # Fail if response time > 3 seconds
+          if (( $(echo "$response_time > 3.0" | bc -l) )); then
+            echo "Response time too slow: ${response_time}s"
+            exit 1
+          fi
+
+  # Cleanup on failure
+  cleanup-on-failure:
+    needs: [quality-gates, docker-build, integration-tests, deploy-infrastructure, update-ecs-service, post-deployment-tests]
+    runs-on: ubuntu-latest
+    if: failure() && needs.quality-gates.outputs.should-deploy == 'true'
+    
+    steps:
+      - name: Rollback on failure
+        run: |
+          echo "Deployment failed, initiating rollback..."
+          # Add rollback logic here if needed
+          
+      - name: Notify failure
+        uses: 8398a7/action-slack@v3
+        if: always()
+        with:
+          status: failure
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+          text: "🚨 Deployment failed for ${{ needs.quality-gates.outputs.environment }} environment"
+
+  # Success notification
+  notify-success:
+    needs: [quality-gates, post-deployment-tests]
+    runs-on: ubuntu-latest
+    if: success() && needs.quality-gates.outputs.should-deploy == 'true'
+    
+    steps:
+      - name: Download CDK outputs
+        uses: actions/download-artifact@v3
+        with:
+          name: cdk-outputs-${{ needs.quality-gates.outputs.environment }}
+
+      - name: Notify success
+        uses: 8398a7/action-slack@v3
+        with:
+          status: success
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+          text: |
+            ✅ Deployment successful!
+            Environment: ${{ needs.quality-gates.outputs.environment }}
+            Version: ${{ github.ref_name }}
+            URL: $(jq -r '.["LKS0426-Portfolio-${{ needs.quality-gates.outputs.environment ^}}"].WebsiteURL' cdk-outputs.json)
