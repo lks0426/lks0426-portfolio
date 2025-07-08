@@ -36,6 +36,9 @@ Dockerfile*
 *.md
 docs
 
+# Keep public directory
+!public
+
 # Infrastructure
 infrastructure
 
