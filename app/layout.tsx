@@ -5,22 +5,22 @@ import './globals.css'
 const inter = Inter({ subsets: ['latin'] })
 
 export const metadata: Metadata = {
-  title: 'LKS0426 - Full-Stack Developer & AI Enthusiast',
-  description: 'Personal portfolio showcasing full-stack development projects, AI applications, and cloud architecture expertise',
-  keywords: ['full-stack developer', 'AI', 'cloud architect', 'React', 'Next.js', 'TypeScript'],
+  title: 'LKS0426 - 全栈开发者 & AI 技术爱好者',
+  description: '个人作品集，展示全栈开发项目、AI应用和云架构专业技能',
+  keywords: ['全栈开发者', 'AI', '云架构师', 'React', 'Next.js', 'TypeScript'],
   authors: [{ name: 'LKS0426' }],
   openGraph: {
-    title: 'LKS0426 - Full-Stack Developer & AI Enthusiast',
-    description: 'Building innovative solutions at the intersection of AI and modern web technologies',
+    title: 'LKS0426 - 全栈开发者 & AI 技术爱好者',
+    description: '在AI与现代Web技术交汇处构建创新解决方案',
     type: 'website',
-    locale: 'en_US',
+    locale: 'zh_CN',
     url: 'https://lks0426.com',
-    siteName: 'LKS0426 Portfolio'
+    siteName: 'LKS0426 作品集'
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'LKS0426 - Full-Stack Developer & AI Enthusiast',
-    description: 'Building innovative solutions at the intersection of AI and modern web technologies',
+    title: 'LKS0426 - 全栈开发者 & AI 技术爱好者',
+    description: '在AI与现代Web技术交汇处构建创新解决方案',
   },
   robots: {
     index: true,
@@ -41,8 +41,10 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <html lang="en">
-      <body className={inter.className}>{children}</body>
+    <html lang="zh-CN" suppressHydrationWarning>
+      <body className={inter.className} suppressHydrationWarning>
+        {children}
+      </body>
     </html>
   )
 }

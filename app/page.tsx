@@ -6,7 +6,7 @@ import { MCPToolsSection } from '@/presentation/components/sections/MCPToolsSect
 
 export default function Home() {
   return (
-    <main className="min-h-screen bg-white dark:bg-gray-900">
+    <main className="min-h-screen bg-gray-900">
       <HeroSection />
       <TechStackSection />
       <ProjectsSection />
