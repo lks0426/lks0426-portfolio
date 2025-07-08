@@ -44,7 +44,7 @@ export function HeroSection() {
           </div>
           
           <p className="text-xl text-gray-300 mb-16 max-w-3xl mx-auto leading-relaxed">
-            🎯 Claude 代码助手演示：自动化 CI/CD 流水线运行中...<br/>
+            🎯 企业级CI/CD流水线测试：Docker Hub自动构建部署中...<br/>
             在AI与现代Web技术的交汇点构建创新解决方案<br/>
             专注于创造高效、可扩展的应用程序，推动技术边界的不断突破
           </p>

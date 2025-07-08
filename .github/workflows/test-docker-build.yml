@@ -1,0 +1,127 @@
+name: Test Docker Build Only
+
+on:
+  workflow_dispatch:  # Manual trigger only
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'infrastructure/**'
+
+env:
+  DOCKER_REPOSITORY: lks0426/lks0426-portfolio
+
+jobs:
+  # Quality Gates - Testing and Security  
+  quality-gates:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --frozen-lockfile
+
+      - name: Run linter
+        run: npm run lint
+
+      - name: Run type checking
+        run: npm run type-check
+
+      - name: Run unit tests
+        run: npm test -- --coverage --watchAll=false
+        env:
+          CI: true
+
+      - name: Build application
+        run: npm run build
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL || 'placeholder' }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'placeholder' }}
+
+  # Docker Build and Push to Docker Hub
+  docker-build:
+    needs: quality-gates
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME || 'lks0426' }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        id: build-and-push
+        run: |
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          DOCKER_IMAGE=${{ env.DOCKER_REPOSITORY }}:$TIMESTAMP
+          DOCKER_LATEST=${{ env.DOCKER_REPOSITORY }}:latest
+          
+          echo "🐳 Building Docker image..."
+          # Build image with multi-tags
+          docker build -f Dockerfile.simple-fixed -t $DOCKER_IMAGE -t $DOCKER_LATEST .
+          
+          echo "📤 Pushing to Docker Hub..."
+          # Push both timestamp and latest tags
+          docker push $DOCKER_IMAGE
+          docker push $DOCKER_LATEST
+          
+          echo "✅ Docker images pushed successfully!"
+          echo "🏷️  Tags: $DOCKER_IMAGE, $DOCKER_LATEST"
+          
+          # Save image URI for other jobs
+          echo "image-uri=$DOCKER_IMAGE" >> $GITHUB_OUTPUT
+          echo "image-latest=$DOCKER_LATEST" >> $GITHUB_OUTPUT
+
+      - name: Verify image on Docker Hub
+        run: |
+          echo "🔍 Verifying image was pushed successfully..."
+          docker pull ${{ env.DOCKER_REPOSITORY }}:latest
+          echo "✅ Image verification successful!"
+
+  # Test the built image locally
+  test-docker-image:
+    needs: docker-build
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Pull and test image
+        run: |
+          echo "🧪 Testing the built Docker image..."
+          
+          # Pull the latest image
+          docker pull ${{ env.DOCKER_REPOSITORY }}:latest
+          
+          # Run the image and test it responds
+          docker run -d -p 3000:3000 --name test-container ${{ env.DOCKER_REPOSITORY }}:latest
+          
+          # Wait for the container to start
+          sleep 30
+          
+          # Test if the application responds
+          curl -f http://localhost:3000/ || exit 1
+          
+          # Check container logs
+          docker logs test-container
+          
+          # Cleanup
+          docker stop test-container
+          docker rm test-container
+          
+          echo "✅ Docker image test successful!"
