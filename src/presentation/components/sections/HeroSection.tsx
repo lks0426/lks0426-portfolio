@@ -44,7 +44,7 @@ export function HeroSection() {
           </div>
           
           <p className="text-xl text-gray-300 mb-16 max-w-3xl mx-auto leading-relaxed">
-            🎯 优化构建流程：多阶段Docker+缓存，触发CI/CD测试中...<br/>
+            🚀 完整流程测试：代码→构建→验证→ECS部署，端到端测试中...<br/>
             在AI与现代Web技术的交汇点构建创新解决方案<br/>
             专注于创造高效、可扩展的应用程序，推动技术边界的不断突破
           </p>
@@ -94,9 +94,15 @@ export function HeroSection() {
           </div>
           
           <div className="mt-12 text-sm text-gray-400 font-light">
-            <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-gray-800/30 backdrop-blur-sm">
-              <span className="animate-pulse">🚀</span>
-              <span>部署时间: {deployTime}</span>
+            <div className="inline-flex items-center gap-4">
+              <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-gray-800/30 backdrop-blur-sm">
+                <span className="animate-pulse">🚀</span>
+                <span>部署时间: {deployTime}</span>
+              </div>
+              <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-blue-900/30 backdrop-blur-sm">
+                <span>📦</span>
+                <span>版本: v2025.07.08-E2E</span>
+              </div>
             </div>
           </div>
         </div>
