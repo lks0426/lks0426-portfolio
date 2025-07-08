@@ -142,11 +142,11 @@ jobs:
   # Skip integration tests for now to simplify workflow
   # Will be added back once ECR permissions are properly configured
 
-  # ECS Service Update (disabled until AWS infrastructure is deployed)
+  # ECS Service Update
   deploy-to-ecs:
     needs: [quality-gates, docker-build]
     runs-on: ubuntu-latest
-    if: false # Temporarily disabled - needs.quality-gates.outputs.should-deploy == 'true'
+    if: needs.quality-gates.outputs.should-deploy == 'true'
     environment: ${{ needs.quality-gates.outputs.environment }}
     
     steps:
@@ -187,11 +187,11 @@ jobs:
             --services ${{ env.ECS_SERVICE }} \
             --region ${{ env.AWS_REGION }}
 
-  # Post-deployment validation (disabled until AWS infrastructure is deployed)
+  # Post-deployment validation
   post-deployment-tests:
     needs: [quality-gates, deploy-to-ecs]
     runs-on: ubuntu-latest
-    if: false # Temporarily disabled - needs.quality-gates.outputs.should-deploy == 'true'
+    if: needs.quality-gates.outputs.should-deploy == 'true'
     
     steps:
       - name: Health check on deployed service
@@ -246,7 +246,7 @@ jobs:
 
   # Success notification
   notify-success:
-    needs: [quality-gates, docker-build] # Changed from post-deployment-tests
+    needs: [quality-gates, post-deployment-tests]
     runs-on: ubuntu-latest
     if: success() && needs.quality-gates.outputs.should-deploy == 'true'
     
