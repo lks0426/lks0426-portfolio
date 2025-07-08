@@ -116,6 +116,7 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build and push Docker image
+        id: build-and-push
         run: |
           TIMESTAMP=$(date +%Y%m%d-%H%M%S)
           ECR_URI=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}
@@ -134,7 +135,7 @@ jobs:
         if: github.event_name == 'pull_request'
         with:
           command: cves
-          image: ${{ steps.build.outputs.image-uri }}
+          image: ${{ steps.build-and-push.outputs.image-uri }}
           only-severities: critical,high
           exit-code: true
 
