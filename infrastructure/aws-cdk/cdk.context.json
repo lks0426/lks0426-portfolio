@@ -1,0 +1,11 @@
+{
+  "availability-zones:account=345289096628:region=ap-northeast-1": [
+    "ap-northeast-1a",
+    "ap-northeast-1c",
+    "ap-northeast-1d"
+  ],
+  "hosted-zone:account=345289096628:domainName=lks0426.com:region=ap-northeast-1": {
+    "Id": "/hostedzone/Z06972913R74SKNGODUCH",
+    "Name": "lks0426.com."
+  }
+}

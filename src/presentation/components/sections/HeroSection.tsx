@@ -44,7 +44,7 @@ export function HeroSection() {
           </div>
           
           <p className="text-xl text-gray-300 mb-16 max-w-3xl mx-auto leading-relaxed">
-            🎯 企业级CI/CD：镜像验证→ECS部署，确保质量门控...<br/>
+            🎯 优化构建流程：多阶段Docker+缓存，触发CI/CD测试中...<br/>
             在AI与现代Web技术的交汇点构建创新解决方案<br/>
             专注于创造高效、可扩展的应用程序，推动技术边界的不断突破
           </p>
